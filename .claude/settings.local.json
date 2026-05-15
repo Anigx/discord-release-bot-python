@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add *)",
+      "Bash(git commit -m 'Update docker-compose to use GHCR image *)",
+      "Bash(git push *)",
+      "Bash(grep -o '\"name\":\"[^\"]*\"' \"$\\(cd ~ && pwd\\)/.claude/projects/d--Pojects-discord-release-bot-python/be6811be-2313-46db-b2b7-ef495c5b3992.jsonl\")",
+      "Bash(python main.py)"
+    ]
+  }
+}

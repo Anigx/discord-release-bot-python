@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  bot:
+    image: ghcr.io/anigx/discord-release-bot-python:latest
+    container_name: discord-release-bot
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_OWNER=${GITHUB_OWNER}
+      - GITHUB_REPO=${GITHUB_REPO}
+      - DISCORD_CLIENT_ID=${DISCORD_CLIENT_ID}
+      - DISCORD_ANNOUNCEMENT_CHANNEL_ID=${DISCORD_ANNOUNCEMENT_CHANNEL_ID}
+      - DATA_DIR=/app/data
+    restart: unless-stopped
+    pull_policy: always
+    volumes:
+      - bot-data:/app/data
+
+volumes:
+  bot-data:
