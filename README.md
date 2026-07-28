@@ -5,10 +5,10 @@ Ein Discord Bot in Python, der GitHub Releases automatisch in Discord als format
 ## Features
 
 - **GitHub Integration**: Fetcht GitHub Releases und postet sie als Discord Embeds
-- **/version Command**: Slash Command zum manuellen Auslösen von Release-Ankündigungen
-- **Pre-Release Support**: Optionale Unterstützung für Beta/Alpha Releases
+- **Getrennte Release-Channels**: Stable- und Beta-Releases werden in getrennte Discord-Channels gepostet
+- **Discord-Konfiguration**: Repository, Anzeigename und Release-Channels werden per Slash Command pro Server eingerichtet
 - **Asset Links**: Zeigt Download-Links und Dateigröße von Assets
-- **Environment Variables**: Vollständig über Umgebungsvariablen konfigurierbar
+- **Persistente Einstellungen**: Die Server-Konfiguration bleibt im Daten-Volume erhalten
 - **Docker Ready**: Multi-Stage Dockerfile für optimierte Container Images
 - **CI/CD**: GitHub Actions mit automatischem Build und Docker Push mit Caching
 - **Python 3.11+**: Modern Python mit discord.py
@@ -58,20 +58,12 @@ cp .env.example .env
 
 ```env
 DISCORD_TOKEN=dein_bot_token
-DISCORD_CLIENT_ID=deine_client_id
-DISCORD_ANNOUNCEMENT_CHANNEL_ID=channel_id_für_announcements
-GITHUB_OWNER=github_username
-GITHUB_REPO=repository_name
 ```
 
 **Optionale Environment Variables:**
 
 ```env
 GITHUB_TOKEN=optional_github_token    # Für höhere Rate Limits (5000/h statt 60/h)
-APP_NAME=Deine App                    # Standard: "MyApp"
-INCLUDE_PRE_RELEASES=false            # Standard: false
-INCLUDE_ASSETS=true                   # Standard: true
-DISCORD_GUILD_ID=                     # Optional: für schnelle Command Registration
 ```
 
 ### 4. Discord Bot Setup
@@ -80,10 +72,9 @@ DISCORD_GUILD_ID=                     # Optional: für schnelle Command Registra
 2. Neue Application erstellen
 3. Im "Bot" Bereich "Add Bot" klicken
 4. Token kopieren → in `.env` eintragen
-5. Client ID kopieren → in `.env` eintragen
-6. Intents aktivieren: `Guilds`
-7. OAuth2 Permissions: `Send Messages`, `Embed Links`
-8. Bot auf Server einladen via OAuth2 URL
+5. Intents aktivieren: `Guilds`
+6. OAuth2 Permissions: `Send Messages`, `Embed Links`
+7. Bot auf Server einladen via OAuth2 URL
 
 ### 5. Bot starten
 
@@ -91,26 +82,38 @@ DISCORD_GUILD_ID=                     # Optional: für schnelle Command Registra
 python main.py
 ```
 
-Der Bot sollte dann online gehen und der `/version` Command verfügbar sein.
+Der Bot sollte dann online gehen. Discord kann bis zu einer Stunde benötigen, bis globale Slash Commands verfügbar sind.
 
 ## Verwendung
+
+### Ersteinrichtung
+
+Nutzer mit der Berechtigung **Server verwalten** richten den Bot direkt im jeweiligen Discord-Server ein:
+
+```bash
+/settings repository owner:Anigx repo:Furya-Public app_name:Furya
+/settings channel release_type:stable channel:#furya-releases
+/settings channel release_type:beta channel:#furya-beta
+/autopost
+```
+
+`/settings show` zeigt die gespeicherten Einstellungen an. Repository, Stable-Channel, Beta-Channel, Autopost-Status und die zuletzt geposteten Release-IDs werden je Server im `state.json` gespeichert.
 
 ### /version Command
 
 ```bash
-/version                              # Neueste Release posten
-/version tag:v1.0.0                   # Spezifische Version posten
-/version tag:v2.0.0-beta pre_releases:true
+/version                                      # Neueste Stable-Version posten
+/version release_type:beta                    # Neueste Beta-Version posten
+/version tag:v1.5.9                           # Bestimmte Stable-Version posten
+/version tag:v1.5.9-beta.4                    # Bestimmte Beta-Version posten
 ```
 
-**Parameter:**
-- `tag` (optional): Spezifisches Release Tag (z.B. v1.0.0)
-- `pre_releases` (optional): Pre-Releases einschließen? (true/false)
+Ein getaggtes Release wird immer anhand seines GitHub-Status (`prerelease`) in den korrekten Stable- oder Beta-Channel geroutet. `/version` und `/autopost` erfordern ebenfalls **Server verwalten**.
 
 ### Command-Registrierung
 
-- Mit `DISCORD_GUILD_ID`: Commands sofort verfügbar (< 1 Sekunde)
-- Ohne Guild ID: Global Commands (15-60 Minuten Synchronisierung)
+- Die Commands werden global registriert.
+- Neue oder geänderte Commands können 15-60 Minuten zur Anzeige benötigen.
 
 ## Docker
 
@@ -214,7 +217,7 @@ Fetcht Releases von der GitHub API.
 
 ```python
 github = GitHubService(owner, repo, token)
-release = await github.get_latest_release(include_pre_releases=False)
+release = await github.get_latest_release(prerelease=False)
 release = await github.get_release_by_tag("v1.0.0")
 ```
 
@@ -246,15 +249,14 @@ cat .env | grep DISCORD_TOKEN
 python main.py
 ```
 
-### /version Command nicht sichtbar
+### Slash Commands nicht sichtbar
 
-- `DISCORD_CLIENT_ID` und `DISCORD_TOKEN` sind korrekt?
+- Ist `DISCORD_TOKEN` korrekt?
 - Bei globalen Commands: 15-60 Minuten warten (Discord Cache)
-- Alternative: `DISCORD_GUILD_ID` setzen für sofortige Registrierung
 
-### GitHub Release wird nicht gefunden
+### GitHub Release wird nicht gefunden oder nicht gepostet
 
-- GitHub Repository und Owner Name korrekt?
+- `/settings show` ausführen und Repository sowie beide Channels prüfen.
 - Releases sind public/sichtbar?
 - Rate Limit erreicht? (`GITHUB_TOKEN` hinzufügen)
   - Ohne Token: 60 Requests/h

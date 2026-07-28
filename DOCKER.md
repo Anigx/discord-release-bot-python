@@ -15,9 +15,15 @@ cp .env.example .env
 Bearbeite `.env` und füge folgende Variablen ein:
 ```
 DISCORD_TOKEN=your_token_here
-GITHUB_TOKEN=your_github_token_here
-GITHUB_OWNER=your_username
-GITHUB_REPO=your_repo_name
+GITHUB_TOKEN=your_github_token_here # optional
+```
+
+Repository, Anzeigename sowie Stable- und Beta-Channel werden nach dem Start im Discord-Server eingerichtet:
+```
+/settings repository owner:Anigx repo:Furya-Public app_name:Furya
+/settings channel release_type:stable channel:#releases
+/settings channel release_type:beta channel:#beta
+/autopost
 ```
 
 ### Bot starten

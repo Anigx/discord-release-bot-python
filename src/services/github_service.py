@@ -12,27 +12,22 @@ class GitHubService:
         self.token = token
         self.base_url = "https://api.github.com"
 
-    async def get_latest_release(self, include_pre_releases: bool = False) -> Optional[Release]:
-        """Fetch the latest release"""
+    async def get_latest_release(self, prerelease: bool) -> Optional[Release]:
+        """Fetch the latest published stable or pre-release."""
         try:
             releases = await self.get_releases()
-
-            if not releases:
-                logger.warning("No releases found")
-                return None
-
-            filtered_releases = releases
-            if not include_pre_releases:
-                filtered_releases = [r for r in releases if not r.prerelease]
-
-            if not filtered_releases:
-                logger.warning("No stable releases found")
-                return None
-
-            return filtered_releases[0]
+            return self._get_latest_release(releases, prerelease)
         except Exception as e:
             logger.error(f"Failed to get latest release: {e}")
             raise
+
+    async def get_latest_releases(self) -> dict[str, Optional[Release]]:
+        """Fetch the latest stable and beta releases with one API request."""
+        releases = await self.get_releases()
+        return {
+            'stable': self._get_latest_release(releases, prerelease=False),
+            'beta': self._get_latest_release(releases, prerelease=True),
+        }
 
     async def get_release_by_tag(self, tag: str) -> Optional[Release]:
         """Fetch a specific release by tag"""
@@ -57,7 +52,7 @@ class GitHubService:
             logger.error(f"Failed to fetch release with tag '{tag}': {e}")
             raise
 
-    async def get_releases(self, limit: int = 10) -> List[Release]:
+    async def get_releases(self, limit: int = 100) -> List[Release]:
         """Fetch releases from GitHub"""
         try:
             url = f"{self.base_url}/repos/{self.owner}/{self.repo}/releases?per_page={limit}"
@@ -101,6 +96,17 @@ class GitHubService:
             html_url=gh_release.get('html_url', ''),
             assets=assets
         )
+
+    def _get_latest_release(self, releases: List[Release], prerelease: bool) -> Optional[Release]:
+        matching_releases = [
+            release for release in releases
+            if not release.draft and release.prerelease == prerelease
+        ]
+        if matching_releases:
+            return max(matching_releases, key=lambda release: (release.published_at, release.id))
+
+        logger.warning("No %s releases found", "pre-release" if prerelease else "stable")
+        return None
 
     def _get_headers(self) -> dict:
         """Get HTTP headers for GitHub API"""

@@ -6,15 +6,7 @@ services:
     container_name: discord-release-bot
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
-      - DISCORD_CLIENT_ID=${DISCORD_CLIENT_ID}
-      - DISCORD_ANNOUNCEMENT_CHANNEL_ID=${DISCORD_ANNOUNCEMENT_CHANNEL_ID}
-      - DISCORD_GUILD_ID=${DISCORD_GUILD_ID:-}
-      - GITHUB_OWNER=${GITHUB_OWNER}
-      - GITHUB_REPO=${GITHUB_REPO}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
-      - APP_NAME=${APP_NAME:-MyApp}
-      - INCLUDE_PRE_RELEASES=${INCLUDE_PRE_RELEASES:-false}
-      - INCLUDE_ASSETS=${INCLUDE_ASSETS:-true}
       - DATA_DIR=/app/data
     restart: unless-stopped
     pull_policy: always

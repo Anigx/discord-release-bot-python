@@ -1,16 +1,25 @@
+import asyncio
+from typing import Literal, Optional
+
 import discord
 from discord import app_commands
 from discord.ext import commands
-from typing import Optional
-import asyncio
 
-from src.config import load_config, Config
-from src.services import GitHubService, FormatterService, DiscordService
-from src.state import StateManager
+from src.config import Config, load_config
 from src.logger import logger
+from src.services import DiscordService, FormatterService, GitHubService
+from src.state import StateManager
+
+ReleaseType = Literal['stable', 'beta']
+
 
 class ReleaseBot(commands.Cog):
-    """Discord bot for GitHub release announcements"""
+    """Discord bot for GitHub release announcements."""
+
+    settings = app_commands.Group(
+        name='settings',
+        description='Configure the release bot for this server.',
+    )
 
     def __init__(self, bot: commands.Bot, config: Config):
         self.bot = bot
@@ -19,227 +28,249 @@ class ReleaseBot(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        """Bot is ready"""
-        logger.info(f"✅ Bot is online as {self.bot.user}")
-        logger.info(f"📢 Announcement Channel ID: {self.config.bot_announcement_channel_id}")
-        logger.info(f"🔗 GitHub: {self.config.github_owner}/{self.config.github_repo}")
+        """Start the command sync and release polling loop once."""
+        logger.info(f'Bot is online as {self.bot.user}')
 
-        # List all guilds
-        guilds = self.bot.guilds
-        if guilds:
-            logger.info(f"[READY] Bot is in {len(guilds)} guild(s):")
-            for guild in guilds:
-                logger.info(f"[READY]   - {guild.name} (ID: {guild.id})")
-        else:
-            logger.warning("[READY] Bot is not in any guilds!")
-
-        # Sync commands
         try:
             synced = await self.bot.tree.sync()
-            logger.info(f"✅ Synced {len(synced)} command(s)")
-        except Exception as e:
-            logger.error(f"Failed to sync commands: {e}")
+            logger.info(f'Synced {len(synced)} command(s)')
+        except Exception as error:
+            logger.error(f'Failed to sync commands: {error}')
 
-        # Start autopost background task
         if not self.autopost_task_started:
             self.autopost_task_started = True
             asyncio.create_task(self._autopost_loop())
-            logger.info("✅ Autopost background task started")
+            logger.info('Autopost background task started')
 
-    @app_commands.command(name="version", description="Fetch and post app release to announcements")
+    @settings.command(name='repository', description='Set the GitHub repository for this server.')
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(
-        tag="Specific version/tag to post (e.g., v1.0.0, or leave empty for latest)",
-        pre_releases="Include pre-releases (beta, alpha)?"
+        owner='GitHub owner, for example Anigx',
+        repo='GitHub repository, for example Furya-Public',
+        app_name='Name shown in release announcements',
+    )
+    async def settings_repository(
+        self,
+        interaction: discord.Interaction,
+        owner: str,
+        repo: str,
+        app_name: str,
+    ):
+        """Save the release source and display name for the current guild."""
+        owner = owner.strip()
+        repo = repo.strip()
+        app_name = app_name.strip()
+        if not owner or not repo or not app_name:
+            await interaction.response.send_message(
+                'Owner, repository and app name must not be empty.', ephemeral=True
+            )
+            return
+
+        StateManager.set_repository(interaction.guild_id, owner, repo, app_name)
+        await interaction.response.send_message(
+            f'Repository set to `{owner}/{repo}` for **{app_name}**.', ephemeral=True
+        )
+        logger.info(f'Repository configured for guild {interaction.guild_id}: {owner}/{repo}')
+
+    @settings.command(name='channel', description='Set the target channel for stable or beta releases.')
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(
+        release_type='Which release type should be posted to this channel?',
+        channel='Target text channel',
+    )
+    async def settings_channel(
+        self,
+        interaction: discord.Interaction,
+        release_type: ReleaseType,
+        channel: discord.TextChannel,
+    ):
+        """Save a release destination for the current guild."""
+        StateManager.set_channel(interaction.guild_id, release_type, channel.id)
+        await interaction.response.send_message(
+            f'{release_type.title()} releases will be posted to {channel.mention}.', ephemeral=True
+        )
+        logger.info(f'{release_type} channel configured for guild {interaction.guild_id}: {channel.id}')
+
+    @settings.command(name='show', description='Show the saved release-bot settings for this server.')
+    @app_commands.guild_only()
+    async def settings_show(self, interaction: discord.Interaction):
+        """Display the current guild configuration."""
+        settings = StateManager.get_guild_settings(interaction.guild_id)
+        repository = settings.get('repository', {})
+        channels = settings.get('channels', {})
+
+        embed = discord.Embed(title='Release Bot Settings', color=discord.Color.blurple())
+        embed.add_field(
+            name='Repository',
+            value=(
+                f"`{repository['owner']}/{repository['repo']}`"
+                if repository.get('owner') and repository.get('repo') else 'Not configured'
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name='App Name', value=repository.get('app_name', 'Not configured'), inline=True
+        )
+        embed.add_field(
+            name='Stable Channel',
+            value=f"<#{channels['stable']}>" if channels.get('stable') else 'Not configured',
+            inline=True,
+        )
+        embed.add_field(
+            name='Beta Channel',
+            value=f"<#{channels['beta']}>" if channels.get('beta') else 'Not configured',
+            inline=True,
+        )
+        embed.add_field(
+            name='Autopost',
+            value='Enabled' if settings.get('autopost_enabled', False) else 'Disabled',
+            inline=True,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name='version', description='Post a stable or beta release to its configured channel.')
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.describe(
+        tag='Specific release tag to post; leave empty for the newest release',
+        release_type='Release type to fetch when no tag is given',
     )
     async def version_command(
         self,
         interaction: discord.Interaction,
         tag: Optional[str] = None,
-        pre_releases: Optional[bool] = None
+        release_type: ReleaseType = 'stable',
     ):
-        """Handle /version command"""
-        try:
-            logger.info("Version command handler invoked")
-
-            # Defer reply
-            await interaction.response.defer(ephemeral=True)
-            logger.info("Command deferred")
-
-            # Get options
-            include_pre_releases = pre_releases if pre_releases is not None else self.config.include_pre_releases
-            logger.info(
-                f"Version command triggered by {interaction.user} - "
-                f"tag: {tag or 'latest'}, pre_releases: {include_pre_releases}"
+        """Fetch and post a release to the channel determined by its type."""
+        await interaction.response.defer(ephemeral=True)
+        settings = StateManager.get_guild_settings(interaction.guild_id)
+        repository = settings.get('repository', {})
+        if not repository.get('owner') or not repository.get('repo') or not repository.get('app_name'):
+            await interaction.followup.send(
+                'Configure the repository first with `/settings repository`.', ephemeral=True
             )
+            return
 
-            # Initialize services
-            logger.info("Initializing services...")
-            github_service = GitHubService(
-                self.config.github_owner,
-                self.config.github_repo,
-                self.config.github_token or None
+        github_service = GitHubService(
+            repository['owner'], repository['repo'], self.config.github_token
+        )
+        release = (
+            await github_service.get_release_by_tag(tag)
+            if tag else await github_service.get_latest_release(release_type == 'beta')
+        )
+        if not release or release.draft:
+            await interaction.followup.send('No published release was found.', ephemeral=True)
+            return
+
+        actual_release_type: ReleaseType = 'beta' if release.prerelease else 'stable'
+        channel_id = settings.get('channels', {}).get(actual_release_type)
+        if not channel_id:
+            await interaction.followup.send(
+                f'Configure a {actual_release_type} channel with `/settings channel` first.',
+                ephemeral=True,
             )
-            formatter_service = FormatterService(self.config.app_name)
-            discord_service = DiscordService(
-                self.bot,
-                self.config.bot_announcement_channel_id
-            )
-            logger.info("Services initialized")
+            return
 
-            # Fetch release
-            release = None
-            if tag:
-                logger.info(f"Fetching specific release with tag: {tag}...")
-                release = await github_service.get_release_by_tag(tag)
-            else:
-                logger.info(f"Fetching latest release from {self.config.github_owner}/{self.config.github_repo}...")
-                release = await github_service.get_latest_release(include_pre_releases)
+        posted = await self._post_release(repository['app_name'], release, channel_id)
+        if not posted:
+            await interaction.followup.send('The release could not be posted. Check the bot permissions.', ephemeral=True)
+            return
 
-            logger.info(f"Release fetch completed, result: {release.tag_name if release else 'null'}")
+        StateManager.set_last_posted_release_id(interaction.guild_id, actual_release_type, release.id)
+        await interaction.followup.send(
+            f'**{release.tag_name}** was posted to <#{channel_id}> as a {actual_release_type} release.',
+            ephemeral=True,
+        )
 
-            # Check if release found
-            if not release:
-                error_message = f"Release tag '{tag}' not found" if tag else \
-                    ("No releases found (including pre-releases)" if include_pre_releases else "No stable releases found")
-
-                await interaction.followup.send(f"❌ {error_message}", ephemeral=True)
-                return
-
-            # Create embed and post
-            logger.info("Creating release embed...")
-            embed = formatter_service.create_release_embed(release)
-            logger.info("Embed created successfully")
-
-            logger.info("Posting release to announcement channel...")
-            await discord_service.post_release(embed)
-            logger.info("Release posted successfully")
-
-            # Send confirmation
-            confirmation_embed = discord.Embed(
-                title="Release Posted",
-                description=f"**{release.tag_name}** has been posted to <#{self.config.bot_announcement_channel_id}>",
-                color=discord.Color.from_rgb(123, 44, 191)
-            )
-
-            await interaction.followup.send(embed=confirmation_embed, ephemeral=True)
-            logger.info(f"Release {release.tag_name} successfully posted")
-
-        except Exception as e:
-            logger.error(f"Error handling version command: {e}")
-
-            error_embed = discord.Embed(
-                title="Error",
-                description="Failed to fetch and post release. Check bot logs for details.",
-                color=discord.Color.red()
-            )
-
-            try:
-                await interaction.followup.send(embed=error_embed, ephemeral=True)
-            except Exception as e2:
-                logger.error(f"Failed to send error message: {e2}")
-
-    @app_commands.command(name="autopost", description="Toggle automatic release posting")
+    @app_commands.command(name='autopost', description='Toggle automatic stable and beta release announcements.')
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
     async def autopost_command(self, interaction: discord.Interaction):
-        """Handle /autopost command"""
-        try:
-            await interaction.response.defer(ephemeral=True)
-
-            new_state = StateManager.toggle_autopost()
-            status = "🟢 Enabled" if new_state else "🔴 Disabled"
-
-            embed = discord.Embed(
-                title="Autopost Status",
-                description=f"Automatic release posting is now **{status.split()[1]}**",
-                color=discord.Color.green() if new_state else discord.Color.red()
+        """Toggle automatic posting for the current guild."""
+        settings = StateManager.get_guild_settings(interaction.guild_id)
+        repository = settings.get('repository', {})
+        channels = settings.get('channels', {})
+        if not repository.get('owner') or not repository.get('repo'):
+            await interaction.response.send_message(
+                'Configure the repository first with `/settings repository`.', ephemeral=True
             )
-            embed.add_field(name="Status", value=status, inline=False)
-            embed.add_field(
-                name="Poll Interval",
-                value="Checks every 60 seconds",
-                inline=False
+            return
+        if not channels.get('stable') or not channels.get('beta'):
+            await interaction.response.send_message(
+                'Configure both Stable and Beta channels with `/settings channel` first.', ephemeral=True
             )
+            return
 
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            logger.info(f"Autopost toggled to {new_state} by {interaction.user}")
+        enabled = StateManager.toggle_autopost(interaction.guild_id)
+        await interaction.response.send_message(
+            f'Automatic posting is now **{"enabled" if enabled else "disabled"}**.', ephemeral=True
+        )
 
-        except Exception as e:
-            logger.error(f"Error handling autopost command: {e}")
-            error_embed = discord.Embed(
-                title="Error",
-                description="Failed to toggle autopost setting",
-                color=discord.Color.red()
-            )
-            try:
-                await interaction.followup.send(embed=error_embed, ephemeral=True)
-            except Exception as e2:
-                logger.error(f"Failed to send error message: {e2}")
+    async def _post_release(self, app_name: str, release, channel_id: int) -> bool:
+        formatter_service = FormatterService(app_name)
+        discord_service = DiscordService(self.bot, channel_id)
+        return await discord_service.post_release(formatter_service.create_release_embed(release))
 
     async def _autopost_loop(self):
-        """Background loop that checks for new releases every 60 seconds"""
+        """Check each configured guild for new stable and beta releases every minute."""
         await self.bot.wait_until_ready()
-        logger.info("Autopost loop is running")
+        logger.info('Autopost loop is running')
 
         while True:
+            await asyncio.sleep(60)
             try:
-                await asyncio.sleep(60)
+                for guild in self.bot.guilds:
+                    await self._autopost_guild(guild.id)
+            except Exception as error:
+                logger.error(f'Autopost loop error: {error}')
 
-                # Skip if disabled
-                if not StateManager.get_autopost_enabled():
-                    continue
+    async def _autopost_guild(self, guild_id: int):
+        settings = StateManager.get_guild_settings(guild_id)
+        if not settings.get('autopost_enabled'):
+            return
 
-                logger.debug("Autopost: Checking for new releases...")
+        repository = settings.get('repository', {})
+        channels = settings.get('channels', {})
+        if not repository.get('owner') or not repository.get('repo') or not repository.get('app_name'):
+            logger.warning(f'Autopost skipped for guild {guild_id}: repository is not configured')
+            return
 
-                # Initialize services
-                github_service = GitHubService(
-                    self.config.github_owner,
-                    self.config.github_repo,
-                    self.config.github_token or None
-                )
-                formatter_service = FormatterService(self.config.app_name)
-                discord_service = DiscordService(
-                    self.bot,
-                    self.config.bot_announcement_channel_id
-                )
-
-                # Get latest release
-                release = await github_service.get_latest_release(self.config.include_pre_releases)
-
-                if not release:
-                    logger.debug("Autopost: No releases found")
-                    continue
-
-                # Check if already posted
-                last_posted_id = StateManager.get_last_posted_release_id()
-                if release.id == last_posted_id:
-                    logger.debug(f"Autopost: Release {release.tag_name} already posted")
-                    continue
-
-                # Post new release
-                logger.info(f"Autopost: New release detected - {release.tag_name}")
-                embed = formatter_service.create_release_embed(release)
-                await discord_service.post_release(embed)
-
-                # Save release ID
-                StateManager.set_last_posted_release_id(release.id)
-                logger.info(f"Autopost: Successfully posted {release.tag_name}")
-
-            except Exception as e:
-                logger.error(f"Autopost loop error: {e}")
-                # Continue the loop even if there's an error
+        github_service = GitHubService(repository['owner'], repository['repo'], self.config.github_token)
+        releases = await github_service.get_latest_releases()
+        for release_type, release in releases.items():
+            channel_id = channels.get(release_type)
+            if not release or not channel_id:
                 continue
+            if release.id == StateManager.get_last_posted_release_id(guild_id, release_type):
+                continue
+
+            posted = await self._post_release(repository['app_name'], release, channel_id)
+            if posted:
+                StateManager.set_last_posted_release_id(guild_id, release_type, release.id)
+                logger.info(f'Autopost: posted {release.tag_name} to guild {guild_id}')
+
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        """Return actionable messages for command permission and guild errors."""
+        if isinstance(error, app_commands.MissingPermissions):
+            message = 'You need the **Manage Server** permission to use this command.'
+        elif isinstance(error, app_commands.NoPrivateMessage):
+            message = 'This command can only be used in a server.'
+        else:
+            logger.error(f'App command error: {error}')
+            message = 'The command failed. Check the bot logs for details.'
+
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
 
 
 async def setup_bot() -> commands.Bot:
-    """Setup and return bot instance"""
+    """Set up and return the Discord bot."""
     intents = discord.Intents.default()
     intents.guilds = True
-
-    bot = commands.Bot(command_prefix="/", intents=intents)
-
-    # Load config
-    config = load_config()
-
-    # Add cog
-    await bot.add_cog(ReleaseBot(bot, config))
-
+    bot = commands.Bot(command_prefix='/', intents=intents)
+    await bot.add_cog(ReleaseBot(bot, load_config()))
     return bot

@@ -15,10 +15,11 @@ class FormatterService:
         """Create a Discord embed for a release"""
         logger.debug(f"Creating embed for release {release.tag_name}")
 
+        release_type = "Beta" if release.prerelease else "Stable"
         embed = Embed(
-            title=f"{self.app_name} - {release.tag_name}",
+            title=f"{self.app_name} {release_type} - {release.tag_name}",
             url=release.html_url,
-            color=self.VIOLET_COLOR,
+            color=Color.orange() if release.prerelease else self.VIOLET_COLOR,
             description=""
         )
 
@@ -82,7 +83,7 @@ class FormatterService:
                     inline=False
                 )
 
-        embed.set_footer(text="GitHub Release")
+        embed.set_footer(text=f"GitHub {release_type} Release")
 
         logger.debug("Embed created successfully")
         return embed
